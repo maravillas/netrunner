@@ -13,9 +13,11 @@
            ~@actions))))
 
 (defmacro req [& expr]
-  `(fn ~['state 'card 'targets]
+  `(fn ~['state 'side 'card 'targets]
      (let ~['runner '(:runner @state)
             'corp '(:corp @state)
+            'run '(:run @state)
+            'access '(:access @state)
             'corp-reg '(get-in @state [:corp :register])
             'runner-reg '(get-in @state [:runner :register])
             'target '(first targets)

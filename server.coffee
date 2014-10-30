@@ -65,7 +65,7 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
     switch msg.action
       when "create"
         game = {date: new Date(), gameid: ++gameid, title: msg.title,\
-                players: [{user: socket.request.user, side: "Runner"}]}
+                players: [{user: socket.request.user, side: "Corp"}]}
         games.push(game)
         socket.join(gameid)
         socket.emit("netrunner", {type: "game", gameid: gameid})
@@ -204,7 +204,7 @@ app.get '/check/:username', (req, res) ->
       res.send {message: 'OK'}, 200
 
 app.get '/messages/:channel', (req, res) ->
-  db.collection('messages').find({channel: req.params.channel}).sort(date: -1).limit(100).toArray (err, data) ->
+  db.collection('messages').find({channel: req.params.channel}).sort(date: -1).limit(150).toArray (err, data) ->
     throw err if err
     res.json(200, data.reverse())
 

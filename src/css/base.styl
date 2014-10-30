@@ -106,6 +106,19 @@ button.small
     background-color: transparent-orange
     border-color: orange
 
+[draggable]
+  -moz-user-select: none
+  -webkit-user-select: none
+  user-select: none
+  -webkit-user-drag: element
+
+.card.dragged
+  opacity: 1
+  box-shadow(0 0 1px 2px blue)
+
+.dragover
+  border-color: orange !important
+
 .avatar
   vertical-align: middle
   margin-right: 5px
@@ -420,7 +433,7 @@ nav ul
   cover-img: url('/img/bg/Beanstalk.jpg')
 
 .lobby-bg
-  cover-img: url('/img/bg/Eli.jpg')
+  cover-img: url('/img/bg/TheRoot.jpg')
 
 .deckbuilder-bg
   cover-img: url('/img/bg/ProjectAtlas.jpg')
@@ -950,6 +963,18 @@ nav ul
   .advance
     background-color: blue;
 
+  .strength
+    position: absolute
+    padding: 0
+    text-align: center
+    background-color: orange
+    line-height: 24px
+    font-size: 12px
+    bottom: 3px
+    left: 3px
+    height: 24px
+    width: 24px
+
   .abilities, .servers-menu
     display: none
     position: absolute
@@ -1035,14 +1060,14 @@ nav ul
     flex(1)
 
   .button-pane
-    width: 130px
+    width: 186px
     display-flex()
     flex-direction(column)
     justify-content(flex-end)
 
     > .panel
-      padding: 8px 10px
-      margin-left: 0
+      padding: 8px
+      margin: 0
 
     .run-button
       position: relative
@@ -1055,6 +1080,7 @@ nav ul
 
     h4
       text-align: center
+      margin-bottom: 10px
 
     button
       width: 100%
@@ -1085,7 +1111,7 @@ nav ul
       flex(1)
       display-flex()
       flex-direction(column)
-      margin-left: 62px
+      margin-left: 6px
 
       > div
         flex(1)
@@ -1145,8 +1171,8 @@ nav ul
 
             .abilities
               transform(rotate(90deg))
-              top: -135px
-              left: -75px
+              top: -73px
+              left: 12px
 
           .content.center
             left: -13px
@@ -1170,11 +1196,15 @@ nav ul
                 bottom: 85px
                 top: auto
 
-        .server.opponent
+      .corp-board.opponent
+        .server
           transform(rotate(0))
 
           .content
             transform(rotate(0))
+
+          .content.center
+            left: 13px
 
       .card-wrapper
         margin-right: 10px

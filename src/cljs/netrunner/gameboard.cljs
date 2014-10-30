@@ -9,6 +9,7 @@
             [netrunner.cardbrowser :refer [image-url add-symbols] :as cb]))
 
 (defonce game-state (atom {}))
+(defonce lock (atom false))
 
 (defn init-game [game side]
   (swap! game-state merge game)
@@ -22,7 +23,7 @@
 (go (while true
       (let [msg (<! socket-channel)]
         (case (:type msg)
-          "state" (swap! game-state merge (:state msg))
+          "state" (do (swap! game-state merge (:state msg)) (reset! lock false))
           nil))))
 
 (defn send [msg]
@@ -31,9 +32,11 @@
 (defn send-command
   ([command] (send-command command nil))
   ([command args]
-     (try (js/ga "send" "event" "game" command) (catch js/Error e))
-     (send {:action "do" :gameid (:gameid @game-state) :side (:side @game-state)
-            :command command :args args})))
+     (when-not @lock
+       (try (js/ga "send" "event" "game" command) (catch js/Error e))
+       (reset! lock true)
+       (send {:action "do" :gameid (:gameid @game-state) :side (:side @game-state)
+              :command command :args args}))))
 
 (defn send-msg [event owner]
   (.preventDefault event)
@@ -44,9 +47,9 @@
       (aset input "value" "")
       (.focus input))))
 
-(defn action-list [{:keys [type rezzed advanceable advance-counter advancementcost] :as card}]
+(defn action-list [{:keys [type zone rezzed advanceable advance-counter advancementcost] :as card}]
   (-> []
-      (#(if (or (= type "Agenda")
+      (#(if (or (and (= type "Agenda") (= (first zone) "servers"))
                 (= advanceable "always")
                 (and rezzed (= advanceable "while-rezzed"))
                 (and (not rezzed) (= advanceable "while-unrezzed")))
@@ -85,13 +88,14 @@
                (get-in @game-state [:runner :rig (keyword (.toLowerCase (:type card)))]))]
     (some #(= (:title %) (:title card)) dest)))
 
-(defn playable? [{:keys [title side zone cost type uniqueness abilities] :as card}]
+(defn playable? [{:keys [title side zone cost type uniqueness abilities memoryunits] :as card}]
   (let [my-side (:side @game-state)
         me (my-side @game-state)]
     (and (= (keyword (.toLowerCase side)) my-side)
          (and (= zone ["hand"])
               (or (not uniqueness) (not (in-play? card)))
               (or (#{"Agenda" "Asset" "Upgrade" "ICE"} type) (>= (:credit me) cost))
+              (or (not memoryunits) (<= memoryunits (:memory me)))
               (> (:click me) 0)))))
 
 (defn log-pane [messages owner]
@@ -120,12 +124,25 @@
 (defn remote-list []
   (map #(str "Server " %) (-> (get-in @game-state [:corp :servers :remote]) count range reverse)))
 
-(defn card-view [{:keys [zone code type abilities counter advance-counter advancementcost
-                         advanceable rezzed] :as cursor} owner {:keys [flipped] :as opts}]
+(defn handle-dragstart [e cursor]
+  (-> e .-target js/$ (.addClass "dragged"))
+  (-> e .-dataTransfer (.setData "card" (JSON/stringify (clj->js @cursor)))))
+
+(defn handle-drop [e server]
+  (-> e .-target js/$ (.removeClass "dragover"))
+  (let [card (-> e .-dataTransfer (.getData "card") JSON/parse (js->clj :keywordize-keys true))]
+    (send-command "move" {:card card :server server})))
+
+(defn card-view [{:keys [zone code type abilities counter advance-counter advancementcost subtype
+                         advanceable rezzed strength current-strength] :as cursor}
+                 owner {:keys [flipped] :as opts}]
   (om/component
    (when code
      (sab/html
-      [:div.blue-shade.card {:on-mouse-enter #(when (or (not flipped) (= (:side @game-state) :corp))
+      [:div.blue-shade.card {:draggable true
+                             :on-drag-start #(handle-dragstart % cursor)
+                             :on-drag-end #(-> % .-target js/$ (.removeClass "dragged"))
+                             :on-mouse-enter #(when (or (not flipped) (= (:side @game-state) :corp))
                                                 (put! zoom-channel cursor))
                              :on-mouse-leave #(put! zoom-channel false)
                              :on-click #(handle-card-click @cursor owner)}
@@ -136,6 +153,7 @@
        [:div.counters
         (when (> counter 0) [:div.darkbg.counter counter])
         (when (> advance-counter 0) [:div.darkbg.advance.counter advance-counter])]
+       (when current-strength [:div.darkbg.strength current-strength])
        (when (and (= zone ["hand"]) (#{"Agenda" "Asset" "ICE" "Upgrade"} type))
          (let [centrals ["HQ" "R&D" "Archives"]
                remotes (conj (remote-list) "New remote")
@@ -212,12 +230,19 @@
      (when (> (count deck) 0)
        [:img.card.bg {:src "/img/corp.png"}])])))
 
+(defn drop-area [side server]
+  (when (= (:side @game-state) side)
+    {:on-drop #(handle-drop % server)
+     :on-drag-enter #(-> % .-target js/$ (.addClass "dragover"))
+     :on-drag-leave #(-> % .-target js/$ (.removeClass "dragover"))
+     :on-drag-over #(.preventDefault %)}))
+
 (defmulti discard-view #(get-in % [:identity :side]))
 
 (defmethod discard-view "Runner" [{:keys [discard] :as cursor} owner]
   (om/component
    (sab/html
-    [:div.panel.blue-shade.discard
+    [:div.panel.blue-shade.discard (drop-area :runner "Heap")
      (om/build label discard {:opts {:name "Heap"}})
      (when-not (empty? discard)
        (om/build card-view (last discard)))])))
@@ -225,7 +250,7 @@
 (defmethod discard-view "Corp" [{:keys [discard] :as cursor}]
   (om/component
    (sab/html
-    [:div.panel.blue-shade.discard
+    [:div.panel.blue-shade.discard (drop-area :corp "Archives")
      (om/build label discard {:opts {:name "Archives"}})
      (when-not (empty? discard)
        (om/build card-view (last discard)))])))
@@ -299,18 +324,19 @@
   (om/component
    (sab/html
     (let [content (:content server)]
-      [:div.server {:class (when (= (:side @game-state) :runner) "opponent")}
+      [:div.server 
        (let [ices (:ices server)]
          [:div.ices
           (when run
             [:div.run-arrow {:style {:top (str (+ 8 (* 64 (- (count ices) (:position run)))) "px")}}])
           (for [ice ices]
             (om/build card-view ice {:opts {:flipped (not (:rezzed ice))}}))])
-       [:div.content {:class (when (= (count content) 1) "center")}
-        (for [card (reverse content)]
-          (om/build card-view card {:opts {:flipped (not (:rezzed card))}}))
-        (when content
-          (om/build label content {:opts opts}))]]))))
+       (when content
+         [:div.content {:class (when (= (count content) 1) "center")}
+          (for [card (reverse content)]
+            (om/build card-view card {:opts {:flipped (not (:rezzed card))}}))
+          (when content
+            (om/build label content {:opts opts}))])]))))
 
 (defmulti board-view #(get-in % [:player :identity :side]))
 
@@ -320,8 +346,7 @@
     (let [servers (:servers player)
           s (:server run)
           server-type (first s)]
-      (.log js/console (clj->js s))
-      [:div.corp-board
+      [:div.corp-board {:class (when (= (:side @game-state) :runner) "opponent")}
        (om/build server-view {:server (:archives servers) :run (when (= server-type "archives") run)})
        (om/build server-view {:server (:rd servers) :run (when (= server-type "rd") run)})
        (om/build server-view {:server (:hq servers) :run (when (= server-type "hq") run)})
@@ -358,6 +383,14 @@
      [:button {:on-click f} text]
      [:button.disabled text])))
 
+(defn handle-end-turn [cursor owner]
+  (let [me ((:side @game-state) @game-state)
+        max-size (:max-hand-size me)]
+    (if (> (count (:hand me)) max-size)
+      (om/set-state! owner :warning (str "Discard to " max-size " cards"))
+      (do (om/set-state! owner :warning nil)
+          (send-command "end-turn")))))
+
 (defn gameboard [{:keys [side gameid active-player run end-turn] :as cursor} owner]
   (reify
     om/IWillMount
@@ -388,54 +421,60 @@
                 (om/build stats-view me)]]
 
               [:div.button-pane
-               (if-not (:keep me)
+               (when-not (:keep me)
                  [:div.panel.blue-shade
                   [:h4 "Keep hand?"]
                   [:button {:on-click #(send-command "keep")} "Keep"]
                   [:button {:on-click #(send-command "mulligan")} "Mulligan"]])
 
                (when (:keep me)
-                 (if run
-                   (let [s (:server run)
-                         kw (keyword (first s))
-                         server (if-let [n (second s)]
-                                  (get-in cursor [:corp :servers kw n])
-                                  (get-in cursor [:corp :servers kw]))]
-                     (if (= side :runner)
-                       [:div.panel.blue-shade
-                        (when-not (:no-action run) [:h4 "Waiting for Corp's actions" ])
-                        (if (= (:position run) (count server))
-                          (cond-button "Access" (:no-action run) #(send-command "access"))
-                          (cond-button "Continue" (:no-action run) #(send-command "continue")))
-                        (cond-button "Jack Out" (:no-action run) #(send-command "jack-out"))]
-                       [:div.panel.blue-shade
-                        (cond-button "Rez ICE" (>= (:credit me) 0) #(send-command "rez-ice"))
-                        [:button {:on-click #(send-command "no-action")} "No more action" ]]))
+                 (if-let [prompt (first (:prompt me))]
                    [:div.panel.blue-shade
-                    (if (= (keyword active-player) side)
-                      (when (and (zero? (:click me)) (not end-turn))
-                        [:button {:on-click #(send-command "end-turn")} "End Turn"])
-                      (when end-turn
-                        [:button {:on-click #(send-command "start-turn")} "Start Turn"]))
-                    (when (= side :runner)
-                      [:div
-                       (cond-button "Remove Tag"
-                                    (and (>= (:click me) 1) (>= (:credit me) 2) (>= (:tag me) 1))
-                                    #(send-command "remove-tag"))
-                       [:div.run-button
-                        (cond-button "Run" (>= (:click me) 1)
-                                     #(-> (om/get-node owner "servers") js/$ .toggle))
-                        (let [servers (concat (remote-list) ["HQ" "R&D" "Archives"])]
-                          [:div.blue-shade.panel.servers-menu {:ref "servers"}
-                           (map (fn [label]
-                                  [:div {:on-click #(do (send-command "run" {:server label})
-                                                        (-> (om/get-node owner "servers") js/$ .fadeOut))}
-                                   label])
-                                servers)])]])
-                    (when (= side :corp)
-                      (cond-button "Purge" (>= (:click me) 3) #(send-command "purge")))
-                    (cond-button "Draw" (>= (:click me) 1) #(send-command "draw"))
-                    (cond-button "Gain Credit" (>= (:click me) 1) #(send-command "credit"))]))]
+                    [:h4 {:dangerouslySetInnerHTML #js {:__html (add-symbols (:msg prompt))}}]
+                    (for [c (:choices prompt)]
+                      [:button {:on-click #(send-command "choice" {:choice c})} c])]
+                   (if run
+                     (let [s (:server run)
+                           kw (keyword (first s))
+                           server (if-let [n (second s)]
+                                    (get-in cursor [:corp :servers kw n])
+                                    (get-in cursor [:corp :servers kw]))]
+                       (if (= side :runner)
+                         [:div.panel.blue-shade
+                          (when-not (:no-action run) [:h4 "Waiting for Corp's actions" ])
+                          (if (= (:position run) (count (:ices server)))
+                            (cond-button "Access" (:no-action run) #(send-command "access"))
+                            (cond-button "Continue" (:no-action run) #(send-command "continue")))
+                          [:button {:on-click #(send-command "jack-out")} "Jack Out"]]
+                         [:div.panel.blue-shade
+                          (cond-button "No more action" (not (:no-action run))
+                                       #(send-command "no-action"))]))
+                     [:div.panel.blue-shade
+                      (when-let [warning (:warning state)] [:h4 warning])
+                      (if (= (keyword active-player) side)
+                        (when (and (zero? (:click me)) (not end-turn))
+                          [:button {:on-click #(handle-end-turn cursor owner)} "End Turn"])
+                        (when end-turn
+                          [:button {:on-click #(send-command "start-turn")} "Start Turn"]))
+                      (when (= side :runner)
+                        [:div
+                         (cond-button "Remove Tag"
+                                      (and (>= (:click me) 1) (>= (:credit me) 2) (>= (:tag me) 1))
+                                      #(send-command "remove-tag"))
+                         [:div.run-button
+                          (cond-button "Run" (>= (:click me) 1)
+                                       #(-> (om/get-node owner "servers") js/$ .toggle))
+                          (let [servers (concat (remote-list) ["HQ" "R&D" "Archives"])]
+                            [:div.blue-shade.panel.servers-menu {:ref "servers"}
+                             (map (fn [label]
+                                    [:div {:on-click #(do (send-command "run" {:server label})
+                                                          (-> (om/get-node owner "servers") js/$ .fadeOut))}
+                                     label])
+                                  servers)])]])
+                      (when (= side :corp)
+                        (cond-button "Purge" (>= (:click me) 3) #(send-command "purge")))
+                      (cond-button "Draw" (>= (:click me) 1) #(send-command "draw"))
+                      (cond-button "Gain Credit" (>= (:click me) 1) #(send-command "credit"))])))]
 
               [:div.board
                (om/build board-view {:player opponent :run run})

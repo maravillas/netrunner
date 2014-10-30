@@ -11,23 +11,25 @@
 (def commands
   {"say" core/say
    "change" core/change
+   "move" core/move-card
    "mulligan" core/mulligan
    "keep" core/keep-hand
    "start-turn" core/start-turn
    "end-turn" core/end-turn
-   "draw" (do! {:cost [:click 1] :effect (effect (draw) (system-msg "draws 1 card"))})
-   "credit" (do! {:cost [:click 1] :effect (effect (gain :credit 1) (system-msg "gains 1 credit"))})
+   "draw" core/click-draw
+   "credit" core/click-credit
    "purge" (do! {:cost [:click 3] :effect (effect (core/purge) (system-msg "purges viruses"))})
    "remove-tag" (do! {:cost [:click 1 :credit 2 :tag 1] :effect (effect (system-msg "removes 1 tag"))})
    "play" core/play
    "rez" core/rez
-   "run" core/run
+   "run" core/click-run
    "no-action" core/no-action
    "continue" core/continue
    "access" core/successful-run
    "jack-out" (effect (end-run) (system-msg "jacks out"))
    "advance" core/advance
    "score" core/score
+   "choice" core/resolve-prompt
    "ability" core/play-ability})
 
 (defn convert [args]
